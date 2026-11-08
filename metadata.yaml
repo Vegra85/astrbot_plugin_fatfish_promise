@@ -1,0 +1,26 @@
+name: astrbot_plugin_fatfish_promise
+display_name: 鱼力max · 说到做到
+desc: 机器人答应「明天提醒你」「我去睡了」，转头就忘、说完接着聊。插件从它自己说出去的话里认出答应了什么：到点用它自己的口吻去做（群里 @ 那个人），说了去睡 / 潜水 / 不理你就真的做到、有人一直叫才醒，没做成的下次告诉它欠着。细节和配置见 README。
+short_desc: 答应了就到点去做，说去睡就真去睡
+version: v0.1.0
+author: Vegra85
+repo: https://github.com/Vegra85/astrbot_plugin_fatfish_promise
+license: MIT
+astrbot_version: ">=4.29,<5"
+support_platforms:
+  - aiocqhttp
+social_link: https://github.com/Vegra85
+category: 生活
+tags:
+  - 鱼力max
+  - 大肥鱼
+  - DeepSeek
+  - 提醒
+  - 定时提醒
+  - 闹钟
+  - 待办
+  - 承诺
+  - 说到做到
+  - 睡觉
+  - 潜水
+  - 拟人
