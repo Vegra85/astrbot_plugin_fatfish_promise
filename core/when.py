@@ -9,6 +9,11 @@
   - 光说「8 点 / 12 点半」（或者「今天 8 点」）取最近的将来：下午说「8 点」= 今晚 8 点；晚上 10 点说「12 点」= 半夜 0 点、
     不是明天中午；下午说「今天 8 点」= 今晚 8 点（以前算成已经过了、不记）。
   - 「快一点」「一点点」里的「一点」不当成 1 点。
+
+（11-10 v0.1.1 审查 VP1-16）以前认不全的说法不是「不记」，而是把没看懂的那半截悄悄扔掉、剩下的照常算：
+「下个月 5 号」记成这个月 5 号、「周末早上 9 点」记成明早、「三天后早上 8 点」记成三天后的此刻、「下个月第二个周五」记成这周五。
+现在：下个月 / 这个月几号、月底、周末、N 天后 + 几点、明年 / 今年 + 几月几号 落到对的那天；
+句子里还有没用上的日子词（下周、上周三、月初、第二个周五、国庆节、3 个月后……）→ 一律 None，不拿剩下的半截凑一个日子。
 """
 
 import re
@@ -20,7 +25,34 @@ from .clock import BEIJING, dt
 
 _FW = str.maketrans("０１２３４５６７８９：－／．　", "0123456789:-/. ")
 _CN = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-WD = re.compile(r"(下下|下个?|这个?|本)?(?:周|星期|礼拜)([1-7日天])")
+WD = re.compile(r"(下下个?|下个?|这个?|本)?(?:周|星期|礼拜)([1-7日天])")
+# （11-10 v0.1.1 审查 VP1-16）周末 = 那一周的周六（过了就周日）；下个月 / 这个月几号、月底；N 天后 + 几点
+WKND = re.compile(r"(下下个?|下个?|这个?|本)?(?:周|星期|礼拜)末")
+MON_REL = re.compile(r"(下下|下|这|本)\s*个?\s*月(?:份)?\s*的?\s*(?:(\d{1,2})\s*[号日](?![楼线房后内])(?!\d(?!\d?\s*[:点時时]))|月?\s*([底末]))")
+MON_END = re.compile(r"(?<!\d)(?<!\d\s)月\s*[底末]")
+YEAR_REL = re.compile(r"(今|明|后)年\s*的?\s*$")
+_CLOCK = re.compile(r"(?<![快慢多少好大小轻重近远有这那])\d{1,2}\s*[:点時时](?!点)")
+# 「周五8点」「周五八点」换成数字会连成「周58点」（以前读成 58 点 → 不记）：先在周几和钟点中间隔开
+_WD_GAP = re.compile(r"((?:周|星期|礼拜)[一二三四五六日天])(?=[\d零〇一二两三四五六七八九十])")
+_PART_STRICT = re.compile(r"凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|半夜")
+_DATEISH = re.compile(r"(?:周|星期|礼拜)[1-7日天末]|\d{1,2}\s*[号日]|\d{1,2}\s*[-/.月]\s*\d{1,2}|月\s*[底末]")
+# 算不出来的日子词：句子里有就不记（不拿剩下的半截凑一个日子）
+_NOPE = re.compile(
+    r"上上?\s*1?\s*个?\s*(?:周|星期|礼拜|月)"  # 上周三 / 上个月
+    r"|(?:下下?|这|本)\s*1\s*个?\s*(?:周|星期|礼拜|月)"  # 「下一个周三」是这周三还是下周三说不准
+    r"|[去前]年|年\s*[初中底末]|月\s*[初中]|[上中下]旬"
+    r"|第\s*\d+\s*个?\s*(?:周|星期|礼拜|月|天|日|工作日)"  # 第二个周五
+    r"|(?:\d+|半|几)\s*个?\s*(?:月|年)\s*(?:以后|之后|过后|后|内)|\d+\s*日\s*(?:以后|之后|过后|后|内)"  # 3 个月后 / 半年后 / 3 日后
+    r"|昨天|昨晚|昨日|前天|前晚|双休"
+    r"|国庆|元旦|春节|除夕|过年|元宵|清明|端午|中秋|重阳|圣诞|情人节|儿童节|劳动节"
+)
+# 认得、但得跟别的词配上才算得出来的：没配上（没被上面那几条用掉）就不记
+_LEFT = re.compile(
+    r"(?:下下?|这|本)\s*个?\s*(?:周|星期|礼拜|月)"  # 下周（没说周几）/ 下个月（没说几号）
+    r"|[明后]年"  # 明年（没说几月几号）
+    r"|(?<![\d./-])\d{1,2}\s*月(?:份)?(?!\s*\d)"  # 12 月（没说几号）
+    r"|月\s*[底末]|(?:周|星期|礼拜)末"
+)
 DAYS = (
     ("大后天", 3),
     ("后天", 2),
@@ -35,7 +67,8 @@ DAYS = (
     ("今夜", 0),
     ("今日", 0),
 )
-DOM = re.compile(r"(?<![\d:./-])(\d{1,2})\s*[号日](?![\d楼线房后内])")
+# （11-10 v0.1.1）「15 号 8 点」：号后面紧跟着钟点的也认（以前后面一有数字就不认，剩下的「8 点」被记成今天）
+DOM = re.compile(r"(?<![\d:./-])(\d{1,2})\s*[号日](?![楼线房后内])(?!\d(?!\d?\s*[:点時时]))")
 PARTS = (("早", 8), ("上午", 9), ("中午", 12), ("下午", 15), ("傍晚", 18), ("晚", 20), ("夜", 22), ("凌晨", 1))
 PART_WORDS = re.compile(r"早|上午|中午|下午|傍晚|晚|夜|凌晨")
 
@@ -167,8 +200,11 @@ def repeat_of(x):
 
 def dom_of(at):
     """at 里单独写的「几号」→ 那个数（「每月 31 号」排到 30 天的月份也记得是 31 号）"""
-    m = DOM.search(norm(at))
-    return int(m.group(1)) if m else None
+    s = norm(at)
+    m = DOM.search(s)
+    if m:
+        return int(m.group(1))
+    return 31 if MON_END.search(s) else None  # （11-10 v0.1.1）「每月月底」= 每个月最后一天（按 31 号记，小月用月底）
 
 
 def _relative(s):
@@ -184,6 +220,36 @@ def _relative(s):
     return None
 
 
+def _rel_days(s):
+    """（11-10 v0.1.1 审查 VP1-16）「三天后早上 8 点」「一周后晚上」：整天数的「几天后」后面还跟着钟点 / 时段。
+    → None：不是这种（光说「3 天后」「10 分钟后」，照旧从现在起算）
+    → (天数, 去掉「几天后」剩下的)；后面跟的是另一个日子（「两周后的周三」）→ (None, "")：两头对不上，不记"""
+    for rx in (_REL, _PASS):
+        m = rx.search(s)
+        if not m or not dur(m.group(1)):
+            continue
+        segs = [x for x in _DUR_SEG.finditer(m.group(1)) if x.group(1) or x.group(2)]
+        whole = bool(segs) and all(
+            x.group(3) in ("天", "周", "星期", "礼拜") and not x.group(2) and x.group(1) and float(x.group(1)).is_integer() for x in segs
+        )
+        if not whole or re.search(r"内\s*$", m.group(0)):
+            return None
+        left = s[: m.start()] + " " + s[m.end() :]
+        if _DATEISH.search(left):
+            return None, ""
+        if not (_CLOCK.search(left) or _PART_STRICT.search(left)):
+            return None
+        if any(w in left for w, _ in DAYS):
+            return None, ""  # 「三天后…明天 8 点」：钟点说的是哪一天分不清
+        return int(round(dur(m.group(1)) / 1440)), left
+    return None
+
+
+def _add_months(y, m, k):
+    m0 = (m - 1) + k
+    return y + m0 // 12, m0 % 12 + 1
+
+
 def parse_when(at=None, mins=None, now=None, tz=None):
     """时间的说法 → 时间戳（按 tz 算）；看不懂 / 说不清 / 说的那天已经过了 → None。
     mins：几分钟后（数字或「半小时」）；at：「21:00」「九点半」「明天上午十点」「后天晚上 9 点」「11-12 18:00」
@@ -194,7 +260,7 @@ def parse_when(at=None, mins=None, now=None, tz=None):
         m = dur(mins)
         if m:
             return now + max(0.5, m) * 60
-    s = norm(VAGUE.sub(" ", str(at or "")))
+    s = norm(_WD_GAP.sub(r"\1 ", VAGUE.sub(" ", str(at or ""))))  # （11-10 v0.1.1）_WD_GAP：「周五8点」别连成「周58点」
     if not s:
         return None
     # 「8 点一刻 / 三刻」= 8:15 / 8:45；「差一刻 9 点」= 8:45（不然「1 刻」的 1 会被当成分钟）
@@ -206,8 +272,16 @@ def parse_when(at=None, mins=None, now=None, tz=None):
     )
     s = re.sub(r"([点時时])\s*([123])\s*刻(?!钟)", lambda m: m.group(1) + {"1": "15", "2": "30", "3": "45"}[m.group(2)], s)
     rel = _relative(s)
+    rel_days = None
     if rel is not None:
-        return now + max(0.5, rel) * 60
+        rd = _rel_days(s)  # （11-10 v0.1.1）「三天后早上 8 点」= 三天后那天的 8 点，不是三天后的此刻
+        if rd is None:
+            return now + max(0.5, rel) * 60
+        rel_days, s = rd
+        if rel_days is None:
+            return None
+    if _NOPE.search(s):
+        return None  # （11-10 v0.1.1）有算不出来的日子词：不记
     # 「明早 8.30」是 8:30，不是 8 月 30 号（前面有早晚 / 哪天 / 周几才这么认）
     hm = re.search(r"(?<![\d.:/-])(\d{1,2})\.(\d{2})(?![\d.:/\-号日])", s)
     pre = s[: hm.start()] if hm else ""
@@ -221,6 +295,8 @@ def parse_when(at=None, mins=None, now=None, tz=None):
         s = s[: hm.start()] + f"{hm.group(1)}:{hm.group(2)}" + s[hm.end() :]
     base = dt(now, tz)
     y = mo = d = dom = None
+    mday = moff = None  # （11-10 v0.1.1）下个月 / 这个月的几号（"end" = 月底）、隔几个月
+    mfix = False
     year_given = False
     mm = re.search(r"(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})", s)
     if mm:
@@ -231,10 +307,26 @@ def parse_when(at=None, mins=None, now=None, tz=None):
         if mm:
             mo, d = int(mm.group(1)), int(mm.group(2))
             rest = s[: mm.start()] + " " + s[mm.end() :]
+            yq = YEAR_REL.search(s[: mm.start()])  # （11-10 v0.1.1）「明年 12 月 25 号」：以前不看「明年」
+            if yq:
+                y, year_given = base.year + "今明后".index(yq.group(1)), True
+                rest = s[: yq.start()] + " " + s[mm.end() :]
         else:
-            dm = DOM.search(s)
+            mr = MON_REL.search(s)  # （11-10 v0.1.1）「下个月 5 号」「这个月底」「月底」
+            me = None if mr else MON_END.search(s)
+            dm = None if (mr or me) else DOM.search(s)
+            if mr:
+                moff, mfix = {"下下": 2, "下": 1}.get(mr.group(1), 0), True
+                mday = int(mr.group(2)) if mr.group(2) else "end"
+            elif me:
+                moff, mday = 0, "end"
             dom = int(dm.group(1)) if dm else None
-            rest = s[: dm.start()] + " " + s[dm.end() :] if dm else s
+            hit = mr or me or dm
+            rest = s[: hit.start()] + " " + s[hit.end() :] if hit else s
+    wk = WKND.search(rest)
+    if _LEFT.search(WKND.sub(" ", WD.sub(" ", rest, 1), 1)):
+        return None  # （11-10 v0.1.1）「下周」没说周几、「下个月」没说几号、「明年」没说几月几号……：不记
+    dated = mo is not None or dom is not None or mday is not None or rel_days is not None  # 说了哪天（周几 / 今明后天另看）
     tm = re.search(r"(?<![快慢多少好大小轻重近远有这那])(\d{1,2})\s*[:点時时](?!点)\s*(\d{1,2})?\s*(半|一刻|1刻|三刻|3刻)?", rest)
     hh = mi = None
     night = False  # 「晚上 1 点」「今晚 3 点」= 那天夜里 = 日历上的第二天凌晨
@@ -253,10 +345,10 @@ def parse_when(at=None, mins=None, now=None, tz=None):
             hh += 12
         elif re.search(r"中午", rest) and hh < 11:
             hh += 12
-        plain = mo is None and dom is None and not WD.search(rest) and not PART_WORDS.search(rest)
+        plain = not dated and not wk and not WD.search(rest) and not PART_WORDS.search(rest)
     else:  # 只说了哪天：按说的时段，没说时段就早上 9 点；连哪天都没说（「看心情」）→ 看不懂
         part = next(((h, 0) for w, h in PARTS if w in rest), None)
-        if part is None and mo is None and dom is None and not WD.search(rest) and not any(w in rest for w, _ in DAYS):
+        if part is None and not dated and not wk and not WD.search(rest) and not any(w in rest for w, _ in DAYS):
             return None
         hh, mi = part or (9, 0)
     if not (0 <= hh <= 24 and 0 <= mi < 60):
@@ -264,6 +356,24 @@ def parse_when(at=None, mins=None, now=None, tz=None):
     extra = 1 if hh == 24 or night else 0
     hh %= 24
     try:
+        if rel_days is not None:  # （11-10 v0.1.1）N 天后的那天 + 说的钟点
+            t = (base + timedelta(days=rel_days + extra)).replace(hour=hh, minute=mi, second=0, microsecond=0)
+            return t.timestamp()
+        if mday is not None:  # （11-10 v0.1.1）下个月 / 这个月几号、月底；没有那天的月份用月底（跟光说「31 号」一个规矩）
+            if mday != "end" and not 1 <= mday <= 31:
+                return None
+            t = None
+            for k in (moff, moff + 1):
+                yy, m2 = _add_months(base.year, base.month, k)
+                last = monthrange(yy, m2)[1]
+                t = base.replace(
+                    year=yy, month=m2, day=last if mday == "end" else min(mday, last), hour=hh, minute=mi, second=0, microsecond=0
+                ) + timedelta(days=extra)
+                if t.timestamp() >= now - 60:
+                    return t.timestamp()
+                if mfix:
+                    return None  # 说了「这个月」、已经过了：不挪到下个月
+            return t.timestamp()  # 光说「月底」、今天就是月底还过了点 → 下个月的月底
         if mo is not None:
             t = base.replace(year=y or base.year, month=mo, day=d, hour=hh, minute=mi, second=0, microsecond=0)
             t += timedelta(days=extra)
@@ -299,6 +409,14 @@ def parse_when(at=None, mins=None, now=None, tz=None):
             if t.timestamp() < now - 60:
                 t += timedelta(days=7)
             return t.timestamp()
+        if wk:  # （11-10 v0.1.1）周末 = 周六，周六那个点过了就周日；光说「周末」两天都过了 → 下一个周六；「这周末」过了 → 不记
+            p = wk.group(1) or ""
+            sat = base + timedelta(days=5 - base.weekday())
+            for k in (14,) if p.startswith("下下") else (7,) if p.startswith("下") else (0, 1) if p else (0, 1, 7):
+                t = (sat + timedelta(days=k + extra)).replace(hour=hh, minute=mi, second=0, microsecond=0)
+                if t.timestamp() >= now - 60:
+                    return t.timestamp()
+            return None
         shift = next((n for w2, n in DAYS if w2 in rest), None)
         if night and base.hour < 5:
             extra = 0  # 凌晨说的「今晚 / 晚上 3 点」= 今天凌晨 3 点（一天 5 点才算完）

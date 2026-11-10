@@ -11,6 +11,12 @@
   插件里简化掉了（每个群的热闹程度差太多，默认值不好定），只留基础时长。
 
 叫醒（只管睡觉 / 离开 / 潜水这三种「人不在」的）：
+（11-10 v0.1.1 审查 VP1-15）默认档 wake_mode = soft「有人找就醒」：它说了去睡 / 离开 / 潜水以后不接没叫它的话，
+  但有人 @ 它 / 叫它 / 私聊它，马上算叫醒、这条照常回（刚说完那几分钟里只回一句「晚安 / 好的」的不算；别人家的 AI 叫不醒）。
+  以前（0.1.0）默认是下面这套「一直叫才醒」：夜里一句「我去睡了」整个群到早上谁 @ 都不回、被挡的人也没有任何提示，
+  装在别人的机器人上像是插件把机器人搞坏了；作者自己的机器人早就改成有人找就醒了。
+  下面这套留成可选的硬睡档 wake_mode = hard；硬睡档第一次挡住找它的人要说一声（gate 返回 tell，main.py 发一句固定的系统提示；
+  同一个人在它说的那个回来的时间之前只提示一次）：
   - 管理员 @ 它够次数（默认 2 次）→ 醒；
   - 群里几分钟里（默认 5 分钟）被够多不同的真人 @（默认 3 个人）→ 醒；
   - 私聊里他几分钟里连着发够条数（默认 3 条）→ 醒；
@@ -26,7 +32,8 @@ from datetime import timedelta
 from .clock import dt, fmt, span
 
 # kind → (给人看的名字, 挡什么)
-#   all = 这个对话里一句都不回 / direct = 只回 @ 它的 / person = 只不回那一个人 / mod = 不发某种东西
+#   all = 这个对话里一句都不回（v0.1.1 默认档：没叫它的不接、找它的就把它叫醒，见上面「叫醒」）/ direct = 只回 @ 它的 /
+#   person = 只不回那一个人 / mod = 不发某种东西
 KINDS = {
     "sleep": ("睡觉", "all"),
     "away": ("离开", "all"),
@@ -53,6 +60,7 @@ DEFAULTS = {
     "wake_window_min": 5,
     "wake_private_msgs": 3,
     "wake_floor_min": 2,
+    "wake_mode": "soft",  # （11-10 v0.1.1）soft = 有人找就醒（默认）/ hard = 硬睡：一直叫才醒
 }
 JITTER = 0.15
 BACK_HOURS = 12  # 「你刚回来」那句：回来以后这么久都没人跟它说话 → 作废
@@ -70,6 +78,8 @@ class Holds:
         for k, v in (("holds", []), ("hist", []), ("backs", [])):
             if not isinstance(self.d.get(k), list):
                 self.d[k] = v
+        if not isinstance(self.d.get("told"), dict):  # （11-10 v0.1.1）硬睡档告诉过谁：{对话|QQ: 告诉他的那个「几点回来」}
+            self.d["told"] = {}
         self.tz = tz
         self.c = dict(DEFAULTS)
         self.configure(conf)
@@ -81,6 +91,10 @@ class Holds:
         for k, v in (conf or {}).items():
             if k in DEFAULTS and v is not None:
                 self.c[k] = type(DEFAULTS[k])(v)
+
+    def soft(self):
+        """（11-10 v0.1.1）有人找就醒（默认）。只有明确填了 hard 才是硬睡；没填 / 填了别的 → 默认"""
+        return str(self.c.get("wake_mode") or "").strip().lower() != "hard"
 
     def kind_on(self, kind):
         if not self.c["enable"] or kind not in KINDS:
@@ -186,16 +200,22 @@ class Holds:
                 self.dirty = True
                 if directed and not ai:
                     early = now - float(rec["t0"]) < float(self.c["wake_floor_min"]) * 60
-                    if not (early and not admin and BYE.match(str(text or "").strip())):
+                    bye = early and not admin and bool(BYE.match(str(text or "").strip()))
+                    if not bye:
                         rec["calls"] = (rec.get("calls") or [])[-39:] + [
                             {"uid": uid, "name": str(name or "")[:20], "ts": float(now), "admin": bool(admin), "text": str(text or "")[:60]}
                         ]
-                    woke, why = self._wake(rec, scene, now)
+                    if self.soft():  # （11-10 v0.1.1 审查 VP1-15）默认：有人找它就醒（刚说完时只回一句晚安的不算）
+                        woke, why = (False, "刚说完时回的「晚安 / 好的」不算找它") if bye else (True, "有人找它就醒")
+                    else:
+                        woke, why = self._wake(rec, scene, now)
                     if woke:
                         self.end(rec, now, "woke", by=name or uid, by_admin=admin, why=why)
                         out["woke"], out["why"] = rec, why
                         continue
                     out["why"] = why
+                    if not bye and not self.soft() and self._tell(rec, uid, now):
+                        out["tell"] = True  # 硬睡档：第一次挡住找它的这个人 → 让 main.py 说一声
                 elif directed and ai:
                     out["why"] = "别人家的 AI 叫不醒"
                 rec["n"] = int(rec.get("n") or 0) + 1  # 它错过了几条（叫醒它的那条不算：那条照常回）
@@ -206,13 +226,26 @@ class Holds:
                 out["block"], out["rec"], out["why"] = True, rec, "说了少说：没 @ 它的不回"
         return out
 
-    def would_block(self, conv, uid, directed, now):
-        """只看不记：这一条现在该不该回（发送前复查用：它刚说了要走，还在路上的那条回复别发了）→ 挡它的那条 / None"""
+    def would_block(self, conv, uid, directed, now, ai=False):
+        """只看不记：这一条现在该不该回（发送前复查用：它刚说了要走，还在路上的那条回复别发了）→ 挡它的那条 / None
+        （11-10 v0.1.1）默认档（有人找就醒）：还在路上的那条是回找它的人的（不是别人家的 AI）→ 照常发"""
         for rec in self.live(conv, now):
             hold = KINDS[rec["kind"]][1]
+            if hold == "all" and directed and not ai and self.soft():
+                continue
             if hold == "all" or (hold == "person" and str(uid) == rec.get("who")) or (hold == "direct" and not directed):
                 return rec
         return None
+
+    def _tell(self, rec, uid, now):
+        """（11-10 v0.1.1）硬睡档：这个人要不要说一声 → True 只给一次。
+        记的是「告诉过他几点回来」：那个点之前不再说（它中途被叫醒又去睡，同一晚也不重复）；过了那个点下次再挡住他才再说"""
+        key = f"{rec.get('conv')}|{uid}"
+        if float(self.d["told"].get(key) or 0) > now:
+            return False
+        self.d["told"][key] = float(rec.get("until") or now)
+        self.dirty = True
+        return True
 
     def _wake(self, rec, scene, now):
         c = self.c
@@ -276,6 +309,9 @@ class Holds:
         backs = [x for x in self.d["backs"] if now - float(x.get("end") or 0) < BACK_HOURS * 3600]
         if len(backs) != len(self.d["backs"]):
             self.d["backs"][:] = backs
+            self.dirty = True
+        for k in [k for k, v in self.d["told"].items() if float(v or 0) <= now]:  # （11-10 v0.1.1）过了点的「告诉过谁」清掉
+            del self.d["told"][k]
             self.dirty = True
         return out
 

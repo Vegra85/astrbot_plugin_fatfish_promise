@@ -7,9 +7,10 @@
     （明天 08:00、给阿木、在这个群 @ 他）；随便聊一句没筛中 → 不调抽取；下一轮给模型的请求里带着「你答应他的、还没做的 #1」（临时的，不进聊天记录）
   C 把插件的「现在几点」拨到 8 点 → 主动在群里发了一条、前面 @ 阿木；给模型写那句的状态里有谁、原话、现在几点
   D 「10分钟后提醒我喝水」记上 →「不用提醒了」→ 取消；指令 /说到做到 看自己的、别人取消不了、本人能取消、管理员看全部
-  E 机器人说「我去睡了」（开了 AstrBot 主动回复的群）→ 没 @ 的不回、一个人 @ 也不回、管理员 @ 第一次不回、第二次醒来回了，
+  E 机器人说「我去睡了」（开了 AstrBot 主动回复的群）→ 没 @ 的不回；有人 @ 它一次就醒来回了（v0.1.1 的默认：有人找就醒），
     这一轮的状态里写着「你刚回来…谁叫醒的」；醒了以后没 @ 的又照常接
-  F 跟认 AI 插件一起装：标成 AI 的号约的事不进表（也不花钱去抽）；睡着时两个真人 + 一个 AI @ 叫不醒，第三个真人一 @ 就醒
+    （E、F 这两节 11-10 跟着 v0.1.1 的新默认改过，已在真 AstrBot 4.29.4 上跑过；硬睡档和它的系统提示在 tests/test_hold.py、test_hooks.py 里测）
+  F 跟认 AI 插件一起装：标成 AI 的号约的事不进表（也不花钱去抽）；睡着时 AI @ 叫不醒，真人一 @ 就醒
   G 面板接口：读状态、取消、结束约束；没登录读不到；面板页认得出来
   I 私聊里答应的：群里只说「别处还有 1 件」（内容不进群）；到点私聊发给他、不 @
   J 没说时间的答应（「等会帮你查一下」）：记下但不会到点去做；刚答应完接着聊不提，过了半小时他再来时状态里写着还欠着
@@ -393,7 +394,7 @@ async def main():
         await qq.connect()
         await asyncio.sleep(5)
         text = log_text()
-        check(PNAME in text and "[说到做到] v0.1.0 已启用" in text and "测试模式" in text and not real_tracebacks(text),
+        check(PNAME in text and re.search(r"\[说到做到\] v\d+\.\d+\.\d+ 已启用", text) and "测试模式" in text and not real_tracebacks(text),
               "A AstrBot 起来了、插件加载了（测试模式能拨钟）、没有报错", text[-1500:])
 
         # ═════════ B 记进表 ═════════
@@ -469,7 +470,7 @@ async def main():
         check(not any(t["what"] == "提醒他喝水" for t in st.get("pending") or []), "取消以后表里没有要做的了")
 
         # ═════════ E 我去睡了 ═════════
-        print("\n[E 机器人说「我去睡了」→ 真的不回；管理员 @ 两次醒来]")
+        print("\n[E 机器人说「我去睡了」→ 没叫它的不接；有人 @ 它就醒（v0.1.1 的默认）]")
         got = await qq.ask(G2, AMU, "大家好")
         check(bool(got), "（准备）有人 @ 机器人：回了（这个群有了对话，主动回复才接得上）", got)
         await asyncio.sleep(1.5)
@@ -483,15 +484,13 @@ async def main():
         check(hs and hs[0]["kind"] == "sleep" and hs[0]["left_min"] > 0, "约束记上了：这个群里在睡觉", hs)
         n_chat = len(chat_calls)
         check(not await qq.ask(G2, LW, "有人吗", at_bot=False, timeout=4), "没 @ 的话：不回（主动回复也被挡下）")
-        check(not await qq.ask(G2, XC, "你真睡了啊", timeout=4), "一个人 @ 一次：不回（叫不醒）")
-        check(not await qq.ask(G2, ADMIN, "起来一下", timeout=4), "管理员 @ 第一次：不回")
-        check(len(chat_calls) == n_chat, "睡着的这几条连模型都没叫（不花钱）")
-        got = await qq.ask(G2, ADMIN, "醒醒 有事")
-        check(bool(got), "管理员 @ 第二次 → 醒了，回了", got)
+        check(len(chat_calls) == n_chat, "没叫它的这条连模型都没叫（不花钱）")
+        got = await qq.ask(G2, XC, "你真睡了啊")
+        check(bool(got), "一个人 @ 它一次 → 醒了，回了（默认：有人找就醒）", got)
         back = chat_calls[-1]["last"] if chat_calls else ""
-        check("你刚回来" in back and "说了「我去睡了」" in back and "然后真的去睡了" in back and "是「管理员」（管理员）叫回来的" in back,
+        check("你刚回来" in back and "说了「我去睡了」" in back and "然后真的去睡了" in back and "是「小橙」叫回来的" in back,
               "醒来这一轮的状态：N 分钟前你说了「…」然后真的去睡了、谁叫醒的", back[-600:])
-        check("这期间这里有 3 条要回的消息你没回" in back, "还写着这期间没回几条", back[-400:])
+        check("这期间这里有 1 条要回的消息你没回" in back, "还写着这期间没回几条", back[-400:])
         await asyncio.sleep(1.5)
         got = await qq.ask(G2, LW, "现在呢", at_bot=False)
         check(bool(got), "醒了以后：没 @ 的又照常接", got)
@@ -515,16 +514,12 @@ async def main():
             got = await qq.ask(G3, AMU, "晚安啦")
             check(got and "我去睡了" in got[-1]["text"], "（准备）另一个群里机器人说「我去睡了」")
             st = await until(lambda s: any(h["conv"].endswith(f":{G3}") for h in (s.get("holds") or {}).get("live") or []))
-            await action(op="test_clock", offset=float(st.get("offset") or 0) + 150)  # 过了「刚说完只有管理员叫得醒」那 2 分钟
+            await action(op="test_clock", offset=float(st.get("offset") or 0) + 150)  # 过了刚说完的那 2 分钟
             await asyncio.sleep(1.5)
-            check(not await qq.ask(G3, XC, "醒醒", timeout=3.5), "第一个真人 @：不醒")
-            await asyncio.sleep(1.2)
-            check(not await qq.ask(G3, LW, "醒醒", timeout=3.5), "第二个真人 @：不醒")
-            await asyncio.sleep(1.2)
             check(not await qq.ask(G3, BOTX, "醒醒", timeout=3.5), "别人家的 AI @：不算人，叫不醒")
             await asyncio.sleep(1.2)
             got = await qq.ask(G3, AZ, "醒醒")
-            check(bool(got), "第三个真人 @ → 醒了（3 个不同的真人）", got)
+            check(bool(got), "真人一 @ → 醒了", got)
             st = await state()
             hist = [b for b in (st.get("holds") or {}).get("hist") or [] if str(b.get("conv", "")).endswith(f":{G3}")]
             check(hist and hist[-1]["how"] == "woke" and hist[-1]["by"] == "阿珍", "记着是阿珍叫醒的（不是 AI）", hist)

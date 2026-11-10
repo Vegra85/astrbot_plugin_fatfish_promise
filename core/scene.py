@@ -2,13 +2,14 @@
 """给模型看的文字（不依赖 AstrBot）。
 
 规矩（鱼力max E1）：插件只给事实 / 状态 / 规矩，怎么说由模型自己定 —— 这里不写示范句、不写「你可以说……」、
-不定语气。插件自己直接发出去的只有一种：模型叫不通时的那句「（系统提示）到点了：……」，能关。
+不定语气。插件自己直接发出去的只有两种固定的系统提示：模型叫不通时的那句「（系统提示）到点了：……」（能关）；
+（11-10 v0.1.1）硬睡档第一次挡住找它的人时的那句「（系统提示）机器人说了…这会儿在睡觉，大概几点回来」（只有选了硬睡档才会发）。
 """
 
 import re
 
 from .clock import fmt, now_text, span, when_text
-from .hold import KINDS, VERB
+from .hold import GONE, KINDS, VERB
 from .when import REPEAT_TEXT
 
 HEAD = "# 说到做到（插件记的状态，不是谁说的话）"
@@ -132,6 +133,18 @@ def speak_prompt(t, now, tz, label, late=0.0, late_why="", gone=None):
 def fallback_line(t, tz):
     """模型叫不通时插件自己发的（系统口吻，能关）"""
     return f"（系统提示）到点了：{t['what']}（{fmt(float(t.get('created') or 0), tz)} 答应的）"
+
+
+def held_line(rec, now, tz):
+    """（11-10 v0.1.1 审查 VP1-15）硬睡档挡住了找它的人：插件自己发的一句（系统口吻、固定的字，不叫模型、不进对话记录）。
+    只说事实：它说了什么、这会儿在干嘛、大概几点回来、管理员怎么让它马上回来"""
+    k = rec.get("kind")
+    doing = {"sleep": "在睡觉", "away": "不在", "lurk": "在潜水"}.get(k, "不回消息") if k in GONE else "不回消息"
+    say = str(rec.get("say") or "").strip()
+    return (
+        "（系统提示）机器人" + (f"说了「{say[:30]}」，" if say else "") + f"这会儿{doing}，这期间找它不回，"
+        f"大概 {when_text(float(rec.get('until') or now), now, tz)} 回来。管理员发「/说到做到 叫醒」可以让它马上回来。"
+    )
 
 
 def clean_line(text, max_chars=300):

@@ -58,6 +58,12 @@ mism = [(g, k, lit) for g, k, lit in lits if json.dumps(schema[g]["items"][k]["d
 check(not mism, "代码里写的默认值 = 配置说明的默认值", mism)
 check(schema["tasks"]["items"]["fallback"]["default"] is True and schema["tasks"]["items"]["group_via"]["default"] == "at",
       "主动发的消息最克制：群里在原地 @，模型叫不通才发系统提示（能关）")
+wm = W.get("mode") or {}
+check(wm.get("default") == "soft" and wm.get("options") == ["soft", "hard"] and len(wm.get("labels") or []) == 2
+      and "硬睡" in wm.get("hint", "") and "有人找就醒" in wm.get("hint", ""),
+      "（v0.1.1）叫醒那一档：默认 soft（有人找就醒），hard（硬睡）是可选的，说明里两档都写了", wm)
+check(hd.DEFAULTS.get("wake_mode") == "soft" and hasattr(hd.Holds, "soft") and hd.Holds({}).soft() and not hd.Holds({}, conf={"wake_mode": "hard"}).soft(),
+      "（v0.1.1）代码里的默认也是有人找就醒；填 hard 才是硬睡")
 
 print("\n[2 metadata / LICENSE / CHANGELOG]")
 meta = {}
@@ -71,17 +77,20 @@ check(meta.get("display_name") == "鱼力max · 说到做到", "display_name")
 first = meta.get("desc", "").split("。")[0]
 check(len(first) <= 40 and meta.get("desc", "").endswith("细节和配置见 README。"), f"desc：第一句 {len(first)} 字（≤ 40）写痛点，最后「细节和配置见 README。」")
 check(0 < len(meta.get("short_desc", "")) <= 20, f"short_desc {len(meta.get('short_desc', ''))} 字（≤ 20）")
-check(meta.get("version") == "v0.1.0" and meta.get("author") == "Vegra85" and meta.get("license") == "MIT", "版本 / 作者 / 许可")
+check(meta.get("version") == "v0.1.1" and meta.get("author") == "Vegra85" and meta.get("license") == "MIT", "版本 / 作者 / 许可")
+check(re.search(r'^VERSION = "(.+)"$', main_src, re.M).group(1) == meta.get("version", "").lstrip("v"), "main.py 里的版本号 = metadata 的版本号")
 check(meta.get("repo") == "https://github.com/Vegra85/astrbot_plugin_fatfish_promise" and meta.get("social_link") == "https://github.com/Vegra85", "repo / social_link")
 check(meta.get("category") == "生活" and meta.get("astrbot_version") == ">=4.29,<5", "category 生活、AstrBot ≥ 4.29")
 check("aiocqhttp" in tags and {"鱼力max", "大肥鱼", "DeepSeek"} <= set(tags), "只支持 aiocqhttp；tags 有鱼力max、大肥鱼、DeepSeek", tags)
 check("Copyright (c) 2026 Vegra85" in (d / "LICENSE").read_text(encoding="utf-8"), "LICENSE：MIT，2026 Vegra85")
 cl = (d / "CHANGELOG.md").read_text(encoding="utf-8")
 check(cl.startswith("# 更新日志") and "## v0.1.0（2026-11-08）" in cl, "CHANGELOG 格式")
+check(cl.startswith("# 更新日志\n\n## v0.1.1（2026-11-10）\n"), "CHANGELOG 最上面是这一版（v0.1.1）")
 check(not (d / "requirements.txt").exists(), "不要第三方库（没有 requirements.txt）")
 
 print("\n[3 README 第一屏]")
 rd = (d / "README.md").read_text(encoding="utf-8")
+rd = re.sub(r"(?m)^## [^\w\s]+ ", "## ", rd)  # 标题前的 emoji 不算（11-09 README 风格）
 check(rd.startswith("# 鱼力max · 说到做到\n"), "标题")
 check("**鱼力max 系列（鱼有分寸）**" in rd and "[说到做到](https://github.com/Vegra85/astrbot_plugin_fatfish_promise)" in rd, "系列那一行带上自己")
 order = ["## 30 秒装好", "## 和哪些插件能一起装", "## 常见问题", "## 工作原理", "## 全部配置", "## 已知限制", "## 测试", "## 鱼力max 全家福"]
@@ -107,6 +116,19 @@ for p in pys:
 check(not bad, f"{len(pys)} 个 .py 都是 3.10 能跑的写法", bad)
 core_bad = [p.name for p in (d / "core").glob("*.py") if re.search(r"^\s*(from|import)\s+astrbot", p.read_text(encoding="utf-8"), re.M)]
 check(not core_bad, "core/ 不 import astrbot（单测不装 AstrBot 也能跑）", core_bad)
+log_bad = []
+for p in pys:
+    if p.parent.name == "tests":
+        continue  # 测试里的假 astrbot 不算
+    src = p.read_text(encoding="utf-8")
+    if re.search(r"^\s*import logging\b|getLogger\(|^\s*from\s+astrbot\.core\S*\s+import\s+.*\blogger\b|^\s*from\s+astrbot\s+import\s+.*\blogger\b", src, re.M):
+        log_bad.append(p.name)
+    if re.search(r"\blogger\.", src) and not re.search(r"^from astrbot\.api import (?:.*\b)?logger\b", src, re.M):
+        log_bad.append(p.name + "（用了 logger 却不是从 astrbot.api 来的）")
+check(not log_bad, "logger 只从 astrbot.api 来（from astrbot.api import logger）", log_bad)
+raw_bad = [str(p.relative_to(d)) for p in d.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+           and p.suffix in (".py", ".md", ".json", ".yaml", ".html", ".txt") and (b"\x00" in p.read_bytes() or p.read_bytes().startswith(b"\xef\xbb\xbf"))]
+check(not raw_bad, "文件里没有 NUL、开头没有 BOM", raw_bad)
 
 print("\n[5 钩子的规矩]")
 tree = ast.parse(main_src)
@@ -136,7 +158,7 @@ long_nums, links = [], []
 for p in files:
     s = p.read_text(encoding="utf-8")
     for m in re.finditer(r"(?<![\d.])\d{6,}(?![\d.])", s):
-        if m.group(0) not in ("1000000",) and "0123456789" not in m.group(0).translate(str.maketrans("０１２３４５６７８９", "0123456789")):
+        if m.group(0) not in ("1000000", "743856783") and "0123456789" not in m.group(0).translate(str.maketrans("０１２３４５６７８９", "0123456789")):
             long_nums.append(f"{p.relative_to(d)}: {m.group(0)}")
     for m in re.finditer(r"https?://[^\s)\"'<>]+", s):
         u = m.group(0)

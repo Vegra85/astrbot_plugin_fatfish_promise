@@ -88,7 +88,7 @@ check("说了「我少说两句」（少说）" in t5 and "没 @ 你的话插件
 check("正晾着「小橙」" in t5 and "说了「不发表情包了」" in t5 and "表情包会被插件拿掉" in t5, "不理谁、不发表情包")
 t6, _ = sc.turn_block(empty, hd.live(G1, NOW), [], NOW, BJ, "北京时间", "20002", "")
 check("正晾着" not in t6, "被晾着的那个人自己来说话：不给这行（他的消息本来就不回）")
-hd2 = Holds({}, BJ)
+hd2 = Holds({}, BJ, {"wake_mode": "hard"})  # （v0.1.1）管理员 @ 两次才醒是硬睡档；这里测的是「谁叫醒的、没回几条」那句字
 r, _ = hd2.declare(G1, G1, "group", "sleep", "我去睡了 晚安", 120, now=NOW - 40 * 60)
 hd2.gate(G1, "group", "90009", "管理员", True, True, False, "醒醒", NOW - 60)
 hd2.gate(G1, "group", "90009", "管理员", True, True, False, "醒醒", NOW - 30)
@@ -135,6 +135,20 @@ print("\n[6 scene.py 里所有写给模型的字都过一遍 E1]")
 src = (d / "core" / "scene.py").read_text(encoding="utf-8")
 strings = re.findall(r'"([^"\n]{6,})"', src)
 check(strings and not any(SCRIPT.search(x) for x in strings), "core/scene.py 里没有台词 / 语气的说法", [x for x in strings if SCRIPT.search(x)])
+
+print("\n[v0.1.1 默认档被叫醒 / 硬睡档挡住人时的那句系统提示]")
+hd3 = Holds({}, BJ)
+hd3.declare(G1, G1, "group", "sleep", "困了我去睡了", None, now=NOW - 1200)
+hd3.gate(G1, "group", "10001", "阿木", True, False, False, "帮我看看这个", NOW - 30)
+t8, _ = sc.turn_block({}, hd3.live(G1, NOW), hd3.backs_for(G1, "10001"), NOW, BJ, "北京时间", "10001", "")
+check("你刚回来" in t8 and "说了「困了我去睡了」" in t8 and "是「阿木」叫回来的" in t8, "默认档：有人找它就醒 → 这一轮告诉模型它刚回来、谁叫回来的（只有事实）", t8)
+fn = getattr(sc, "held_line", None)
+rec = {"kind": "sleep", "say": "困了我去睡了", "t0": NOW, "until": NOW + 10 * 3600 + 35 * 60}
+line = fn(rec, NOW, BJ) if fn else ""
+check(line.startswith("（系统提示）") and "困了我去睡了" in line and "在睡觉" in line and "明天 08:05" in line and "/说到做到 叫醒" in line,
+      "回退检查：硬睡档的提示：系统口吻、它说了什么、在睡觉、大概几点回来、管理员怎么叫醒", line)
+check(fn is not None and "在潜水" in fn(dict(rec, kind="lurk"), NOW, BJ) and "不在" in fn(dict(rec, kind="away"), NOW, BJ), "潜水 / 离开各有各的说法")
+check(fn is not None and "「」" not in fn(dict(rec, say=""), NOW, BJ), "没记下原话时不写空引号")
 
 ok = sum(1 for c_, _ in RES if c_)
 bad = [m for c_, m in RES if not c_]

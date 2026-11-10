@@ -5,7 +5,9 @@
 机器人嘴上答应「明天提醒你」「等会帮你查」「我去睡了 / 我潜水了」，转头就忘、或者说完「睡了」接着聊 ——
 说的话（模型写的字）和做的事（代码执行的动作）原来没绑在一起。这个插件从它自己说出去的话里认出答应了什么：
   ① 到点的事（承诺表）：到点用它自己的口吻去做（群里 @ 那个人）；晚了补、补不上记着欠一个道歉
-  ② 一段时间的约束：说了去睡 / 潜水 / 不说了 / 不理你 / 不发表情包，那个对话里就真的做到，有人一直叫才醒
+  ② 一段时间的约束：说了去睡 / 潜水 / 不说了 / 不理你 / 不发表情包，那个对话里就真的做到
+     （v0.1.1 起默认「有人找就醒」：去睡 / 离开 / 潜水以后不接没叫它的话，有人 @ 它 / 叫它 / 私聊它照常回；
+      「一直叫才醒」的硬睡是可选档 wake.mode = hard，硬睡档挡住人要发一句系统提示）
   ③ 没说时间的答应：他下次来找它时让它知道还欠着
 
 钩子顺序（排死在这里）：
@@ -42,14 +44,14 @@ from .core.clock import Clock, fmt, make_tz
 from .core.conf import Sub, id_list, num, truthy
 from .core.extract import prefilter
 from .core.hold import KINDS, Holds
-from .core.scene import turn_block
+from .core.scene import held_line, turn_block
 from .core.store import Store
 from .core.table import Table
 from .modules.bridge import Bridge
 from .modules.runner import Runner
 
 PLUGIN_NAME = "astrbot_plugin_fatfish_promise"
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 TAG = "[说到做到]"
 GATE_PRIORITY = sys.maxsize - 10
 REQ_PRIORITY = 30
@@ -169,6 +171,8 @@ class FatfishPromise(Star):
             "wake_window_min": w("window_min", 5, 1, 120),
             "wake_private_msgs": w("private_msgs", 3, 0, 50),
             "wake_floor_min": w("floor_min", 2, 0, 60),
+            # （11-10 v0.1.1 审查 VP1-15）soft = 有人找就醒（默认；老配置里没有这一项也走这个）/ hard = 硬睡
+            "wake_mode": str(self.c("wake", "mode", "soft") or "soft"),
         }
 
     def reload_conf(self):
@@ -278,9 +282,23 @@ class FatfishPromise(Star):
                 release_angel(self.context, event, "说到做到：" + KINDS.get((r.get("rec") or {}).get("kind"), ("约束",))[0])
                 event.stop_event()
                 self._log_held(conv, name, r)
+            if r["block"] and r.get("tell"):
+                self.runner.spawn(self._tell_held(conv, scene, uid, name, r["rec"]))  # 在后台发，不耽误这个钩子
             self.save()
         except Exception as e:
             logger.warning(f"{TAG} 看约束出错（这条照常）：{e!r}"[:300])
+
+    async def _tell_held(self, conv, scene, uid, name, rec):
+        """（11-10 v0.1.1 审查 VP1-15）硬睡档第一次挡住找它的人：发一句固定的系统提示（群里 @ 他；不叫模型、不进对话记录）。
+        同一个人只说一次（core/hold.py 的 _tell 记着）；发不出去只记日志，不重试"""
+        try:
+            ok, why, _ = await self.bridge.send(conv, held_line(rec, self.now(), self.tz), uid if scene == "group" else None)
+        except Exception as e:
+            ok, why = False, repr(e)
+        logger.info(f"{TAG} {conv} 硬睡档挡住了「{name}」：" + ("跟他说了一声（系统提示）" if ok else f"想跟他说一声，没发出去（{why}）")[:200])
+        if ok:
+            self.store.event("held_tell", f"{conv} 硬睡档挡住了「{name}」，发了一句系统提示", self.now())
+            self.save()
 
     @filter.on_llm_request(priority=REQ_PRIORITY)
     async def on_req(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -335,7 +353,8 @@ class FatfishPromise(Star):
             if not self.holds.live(conv, now):
                 return
             if not event.get_extra(WOKE_KEY):
-                rec = self.holds.would_block(conv, event.get_sender_id(), self._directed(event), now)
+                uid = event.get_sender_id()
+                rec = self.holds.would_block(conv, uid, self._directed(event), now, ai=self.bridge.is_ai(uid))
                 if rec:
                     release_angel(self.context, event, "说到做到：它刚说了要走")
                     event.clear_result()
@@ -380,6 +399,16 @@ class FatfishPromise(Star):
                 self.holds.consume_backs(shown.get("backs"))
                 self.save()
             bot = plain_of(res.chain)
+            # （11-10 v0.1.1 审查 VP1-13）活人感「叫停 / 刹车」会丢掉没发出去的后半段，并在事件上留下真发出去的字
+            # （alive_sent_text；一个字都没发出去时是空字）→ 只从真发出去的字里认。没装活人感 / 没留这个字段 → 照旧用整段
+            try:
+                cut = event.get_extra("alive_sent_text")
+            except Exception:
+                cut = None
+            if isinstance(cut, str):
+                if cut.strip() != bot:
+                    logger.info(f"{TAG} {conv} 这句只发出去了一部分（活人感叫停 / 刹车）：只从发出去的那部分里认")
+                bot = cut.strip()
             if not bot:
                 return
             user = event.message_str or ""
